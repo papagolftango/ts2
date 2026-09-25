@@ -46,6 +46,15 @@ pio run
 pio device monitor
 ```
 
+
+## Timing reference wheel
+
+This degree-wheel view is the conceptual reference for the trigger-wheel timing model. It shows the fixed TDC reference, the missing-tooth reference marker, and the usable advance window from the minimum safe advance to the maximum tuned advance. The timing labels run anti-clockwise from TDC, while the engine itself rotates clockwise, so the ignition advance appears to the left of TDC on the wheel.
+
+![Timing reference wheel](docs/timing-wheel.svg)
+
+The aim is to eventually align the trigger wheel marks with this model so a strobe can highlight the expected TDC mark, the missing-tooth reference, and the spark advance arc while the engine is being calibrated.
+
 ## Notes
 
 This is intentionally a starter project for an engine-control application. The real-time core should remain focused on timing-critical work, and any heavier processing such as logging, mapping, or data export should live on the non-real-time core or be queued asynchronously.

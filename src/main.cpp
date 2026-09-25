@@ -12,7 +12,7 @@ constexpr uint32_t MAX_VALID_TOOTH_PERIOD_US = 250000;
 constexpr uint32_t MISSING_TOOTH_GAP_FACTOR = 15; // 1.5x normal tooth period threshold
 constexpr uint32_t CDI_FIRE_DELAY_US = 250; // calibrated delay from fire edge to actual spark output
 constexpr uint32_t IGNITION_DWELL_US = 2500; // 2.5 ms active-high dwell for the coil/CDI trigger
-constexpr int16_t MISSING_TOOTH_TO_TDC_OFFSET_DEG10 = 180; // 18.0° reference offset to calibrate per setup
+constexpr int16_t MISSING_TOOTH_TO_TDC_OFFSET_DEG10 = 650; // 65.0° reference offset; missing tooth occurs before TDC and is setup-calibrated
 
 struct IgnitionState {
   uint32_t edgeCount = 0;
@@ -38,6 +38,8 @@ static volatile uint32_t g_periodUs = 0;
 static volatile uint32_t g_edgeCount = 0;
 static volatile bool g_missingToothDetected = false;
 static volatile uint32_t g_lastGoodPeriodUs = 0;
+static volatile uint32_t g_sparkDueUs = 0;
+static volatile bool g_sparkPending = false;
 static QueueHandle_t ignitionQueue = nullptr;
 
 uint32_t estimateRpmTenths(uint32_t periodUs) {
@@ -87,10 +89,25 @@ int32_t computeSparkTimeUs(uint32_t revPeriodUs, uint16_t advanceDeg10, int16_t 
   return static_cast<int32_t>(revPeriodUs - sparkFraction - CDI_FIRE_DELAY_US);
 }
 
-void driveIgnitionDwell() {
+void triggerIgnitionPulse() {
+  if (g_sparkPending == false) {
+    return;
+  }
+
   digitalWrite(IGNITION_OUTPUT_PIN, HIGH);
   delayMicroseconds(IGNITION_DWELL_US);
   digitalWrite(IGNITION_OUTPUT_PIN, LOW);
+  g_sparkPending = false;
+}
+
+void scheduleNextIgnitionEvent(uint32_t revPeriodUs, uint16_t advanceDeg10) {
+  const uint32_t degreesPerRev = 3600U;
+  const uint32_t advanceFromReferenceUs = (static_cast<uint32_t>(advanceDeg10 + MISSING_TOOTH_TO_TDC_OFFSET_DEG10) * revPeriodUs) / degreesPerRev;
+  const uint32_t nowUs = micros();
+  const uint32_t fireWindowUs = (advanceFromReferenceUs > CDI_FIRE_DELAY_US) ? (advanceFromReferenceUs - CDI_FIRE_DELAY_US) : 0U;
+
+  g_sparkDueUs = nowUs + fireWindowUs;
+  g_sparkPending = true;
 }
 
 void IRAM_ATTR onTriggerEdge() {
@@ -147,8 +164,12 @@ void realtimeTask(void *param) {
         Serial.printf("missing tooth detected; spark window=%ld us with cdi delay=%lu us\n",
                       adjustedSparkUs,
                       static_cast<unsigned long>(CDI_FIRE_DELAY_US));
-        driveIgnitionDwell();
+        scheduleNextIgnitionEvent(g_periodUs, sparkAdvanceDeg10);
         g_missingToothDetected = false;
+      }
+
+      if (g_sparkPending && micros() >= g_sparkDueUs) {
+        triggerIgnitionPulse();
       }
 
       xQueueSend(ignitionQueue, &state, 0);
