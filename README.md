@@ -32,6 +32,9 @@ This split intentionally avoids sending serial data or doing heavy processing in
 - credentials are persisted to NVS and applied after automatic reboot
 - dashboard shows live telemetry and key system configuration values
 - dashboard includes editable panels for key ignition/runtime parameters
+- logger clock metadata panel includes UTC datetime, epoch, and time source
+- logger attempts NTP time sync when station WiFi is connected
+- manual epoch entry is available from the web page when NTP is not available
 - JSON endpoint at `/api/status` for machine-readable status polling
 
 ### Trigger and RPM handling

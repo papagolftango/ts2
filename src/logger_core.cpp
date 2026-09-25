@@ -5,11 +5,15 @@
 #include <Preferences.h>
 #include <WebServer.h>
 #include <WiFi.h>
+#include <time.h>
 
 namespace {
 
 constexpr uint16_t WIFI_CONNECT_TIMEOUT_MS = 10000;
 constexpr uint16_t WEB_RESTART_DELAY_MS = 1200;
+constexpr uint32_t TIME_RESYNC_INTERVAL_MS = 3600000;
+constexpr uint16_t TIME_SYNC_WAIT_MS = 5000;
+constexpr uint32_t VALID_UNIX_EPOCH_MIN = 1700000000UL;
 
 Preferences g_preferences;
 WebServer g_webServer(80);
@@ -17,6 +21,18 @@ bool g_setupPortalActive = false;
 bool g_wifiConnected = false;
 bool g_restartRequested = false;
 uint32_t g_restartAtMs = 0;
+bool g_timeSynced = false;
+bool g_timeSetManually = false;
+uint32_t g_lastTimeSyncAttemptMs = 0;
+uint32_t g_lastTimeSyncSuccessMs = 0;
+
+enum TimeSource : uint8_t {
+  TIME_SOURCE_UNKNOWN = 0,
+  TIME_SOURCE_NTP = 1,
+  TIME_SOURCE_MANUAL = 2,
+};
+
+TimeSource g_timeSource = TIME_SOURCE_UNKNOWN;
 
 String formatDeg10(int32_t value) {
   const bool negative = value < 0;
@@ -40,6 +56,84 @@ String wifiIpString() {
   }
 
   return String("not connected");
+}
+
+bool readCurrentUtc(struct tm &utcOut, time_t &epochOut) {
+  time(&epochOut);
+  if (epochOut < static_cast<time_t>(VALID_UNIX_EPOCH_MIN)) {
+    return false;
+  }
+
+  gmtime_r(&epochOut, &utcOut);
+  return true;
+}
+
+String formatIsoUtc(const struct tm &utcValue) {
+  char buf[24];
+  snprintf(
+    buf,
+    sizeof(buf),
+    "%04d-%02d-%02dT%02d:%02d:%02dZ",
+    utcValue.tm_year + 1900,
+    utcValue.tm_mon + 1,
+    utcValue.tm_mday,
+    utcValue.tm_hour,
+    utcValue.tm_min,
+    utcValue.tm_sec
+  );
+  return String(buf);
+}
+
+String timeSourceName() {
+  if (g_timeSource == TIME_SOURCE_NTP) {
+    return String("ntp");
+  }
+
+  if (g_timeSource == TIME_SOURCE_MANUAL) {
+    return String("manual");
+  }
+
+  return String("unsynced");
+}
+
+bool syncTimeFromNtp() {
+  if (!g_wifiConnected) {
+    return false;
+  }
+
+  g_lastTimeSyncAttemptMs = millis();
+  configTzTime("UTC0", "pool.ntp.org", "time.nist.gov", "time.google.com");
+
+  const uint32_t start = millis();
+  struct tm utcNow{};
+  time_t epochNow = 0;
+  while ((millis() - start) < TIME_SYNC_WAIT_MS) {
+    if (readCurrentUtc(utcNow, epochNow)) {
+      g_timeSynced = true;
+      g_timeSetManually = false;
+      g_timeSource = TIME_SOURCE_NTP;
+      g_lastTimeSyncSuccessMs = millis();
+      Serial.print("Logger time sync OK (UTC): ");
+      Serial.println(formatIsoUtc(utcNow));
+      return true;
+    }
+    delay(200);
+  }
+
+  return false;
+}
+
+void maybeRefreshTimeSync() {
+  if (!g_wifiConnected || g_timeSetManually) {
+    return;
+  }
+
+  const uint32_t nowMs = millis();
+  if ((nowMs - g_lastTimeSyncAttemptMs) < TIME_RESYNC_INTERVAL_MS) {
+    return;
+  }
+
+  syncTimeFromNtp();
 }
 
 void loadTelemetrySnapshot(TelemetrySnapshot &snapshot) {
@@ -109,6 +203,13 @@ String buildStatusJson() {
   json += "\"strobe_mask\":" + String(g_strobeMarkerMask) + ",";
   json += "\"strobe_pulse_ms\":" + String(g_strobePulseUs) + ",";
   json += "\"config_version\":" + String(g_configVersion) + ",";
+  struct tm utcNow{};
+  time_t epochNow = 0;
+  const bool hasTime = readCurrentUtc(utcNow, epochNow);
+  json += "\"time_synced\":" + String(hasTime ? 1 : 0) + ",";
+  json += "\"time_source\":\"" + timeSourceName() + "\",";
+  json += "\"epoch\":" + String(static_cast<uint32_t>(hasTime ? epochNow : 0)) + ",";
+  json += "\"datetime_utc\":\"" + String(hasTime ? formatIsoUtc(utcNow) : "unsynced") + "\",";
   json += "\"wifi_mode\":\"" + String(g_setupPortalActive ? "setup-ap" : (g_wifiConnected ? "station" : "offline")) + "\",";
   json += "\"ip\":\"" + wifiIpString() + "\"";
   json += "}";
@@ -154,6 +255,20 @@ void handleRootPage() {
   page += "<tr><td>IP</td><td id='ip'>" + wifiIpString() + "</td></tr>";
   page += "</table></div>";
 
+  struct tm utcNow{};
+  time_t epochNow = 0;
+  const bool hasTime = readCurrentUtc(utcNow, epochNow);
+
+  page += "<div class='panel'><h2>Logger Time Metadata</h2><table>";
+  page += "<tr><td>UTC Date/Time</td><td id='datetime_utc'>" + String(hasTime ? formatIsoUtc(utcNow) : "unsynced") + "</td></tr>";
+  page += "<tr><td>Epoch</td><td id='epoch'>" + String(static_cast<uint32_t>(hasTime ? epochNow : 0)) + "</td></tr>";
+  page += "<tr><td>Time Source</td><td id='time_source'>" + timeSourceName() + "</td></tr>";
+  page += "</table>";
+  page += "<form method='POST' action='/time'>";
+  page += "<label>Manual Epoch (seconds UTC)</label><input name='epoch' type='number' min='1700000000' max='2208988800' placeholder='e.g. 1767225600'>";
+  page += "<button type='submit'>Set Manual Time</button></form>";
+  page += "<small>Use this if NTP is unavailable. Time is used for log metadata.</small></div>";
+
   page += "<div class='panel'><h2>Main System Parameters</h2><table>";
   page += "<tr><td>RPM</td><td id='rpm'>" + String((snapshot.rpm10 + 5U) / 10U) + "</td></tr>";
   page += "<tr><td>Advance (deg BTDC)</td><td id='advance_deg'>" + formatDeg10(snapshot.advanceDeg10) + "</td></tr>";
@@ -195,7 +310,7 @@ void handleRootPage() {
     "const r=await fetch('/api/status');"
     "if(!r.ok){return;}"
     "const d=await r.json();"
-    "const keys=['wifi_mode','ip','rpm','advance_deg','crank_deg','missing_offset_deg','min_advance_deg','max_advance_deg','cdi_delay_us','dwell_us','strobe_enabled','strobe_mask','strobe_pulse_ms','config_version'];"
+    "const keys=['wifi_mode','ip','datetime_utc','epoch','time_source','rpm','advance_deg','crank_deg','missing_offset_deg','min_advance_deg','max_advance_deg','cdi_delay_us','dwell_us','strobe_enabled','strobe_mask','strobe_pulse_ms','config_version'];"
     "for(const k of keys){const el=document.getElementById(k); if(el && d[k]!==undefined){el.textContent=d[k];}}"
     "}"
     "setInterval(refresh,1000);"
@@ -228,6 +343,31 @@ void handleWifiSave() {
   g_restartRequested = true;
   g_restartAtMs = millis() + WEB_RESTART_DELAY_MS;
   g_webServer.send(200, "text/html", "<html><body><h3>Credentials saved. Rebooting...</h3></body></html>");
+}
+
+void handleTimeSave() {
+  if (!g_webServer.hasArg("epoch")) {
+    g_webServer.send(400, "text/plain", "Missing epoch");
+    return;
+  }
+
+  const int32_t epochValue = argToInt(g_webServer.arg("epoch"), 0);
+  if (epochValue < static_cast<int32_t>(VALID_UNIX_EPOCH_MIN)) {
+    g_webServer.send(400, "text/plain", "Epoch out of range");
+    return;
+  }
+
+  timeval tv{};
+  tv.tv_sec = epochValue;
+  tv.tv_usec = 0;
+  settimeofday(&tv, nullptr);
+
+  g_timeSetManually = true;
+  g_timeSynced = true;
+  g_timeSource = TIME_SOURCE_MANUAL;
+  g_lastTimeSyncSuccessMs = millis();
+  g_webServer.sendHeader("Location", "/");
+  g_webServer.send(303, "text/plain", "");
 }
 
 void handleConfigSave() {
@@ -281,11 +421,13 @@ void startLoggerWebInterface() {
   } else {
     Serial.print("Connected to WiFi. IP: ");
     Serial.println(WiFi.localIP());
+    syncTimeFromNtp();
   }
 
   g_webServer.on("/", HTTP_GET, handleRootPage);
   g_webServer.on("/api/status", HTTP_GET, handleStatusApi);
   g_webServer.on("/wifi", HTTP_POST, handleWifiSave);
+  g_webServer.on("/time", HTTP_POST, handleTimeSave);
   g_webServer.on("/config", HTTP_POST, handleConfigSave);
   g_webServer.onNotFound([]() {
     g_webServer.sendHeader("Location", "/");
@@ -305,6 +447,7 @@ void loggerTask(void *param) {
 
   for (;;) {
     g_webServer.handleClient();
+    maybeRefreshTimeSync();
 
     if (g_restartRequested && millis() >= g_restartAtMs) {
       ESP.restart();
