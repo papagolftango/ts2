@@ -35,6 +35,8 @@ This split intentionally avoids sending serial data or doing heavy processing in
 - logger clock metadata panel includes UTC datetime, epoch, and time source
 - logger attempts NTP time sync when station WiFi is connected
 - manual epoch entry is available from the web page when NTP is not available
+- optional BMP280 ambient sensor support on logger side (temperature + pressure)
+- web/API includes BMP280 readings for log metadata tagging
 - JSON endpoint at `/api/status` for machine-readable status polling
 
 ### Trigger and RPM handling

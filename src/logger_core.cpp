@@ -2,6 +2,7 @@
 
 #include "ecu_shared.h"
 
+#include <Adafruit_BMP280.h>
 #include <Preferences.h>
 #include <WebServer.h>
 #include <WiFi.h>
@@ -14,6 +15,8 @@ constexpr uint16_t WEB_RESTART_DELAY_MS = 1200;
 constexpr uint32_t TIME_RESYNC_INTERVAL_MS = 3600000;
 constexpr uint16_t TIME_SYNC_WAIT_MS = 5000;
 constexpr uint32_t VALID_UNIX_EPOCH_MIN = 1700000000UL;
+constexpr uint32_t ENV_SAMPLE_INTERVAL_MS = 1000;
+constexpr float PA_TO_HPA = 0.01f;
 
 Preferences g_preferences;
 WebServer g_webServer(80);
@@ -33,6 +36,11 @@ enum TimeSource : uint8_t {
 };
 
 TimeSource g_timeSource = TIME_SOURCE_UNKNOWN;
+Adafruit_BMP280 g_bmp280;
+bool g_envSensorReady = false;
+float g_envTempC = 0.0f;
+float g_envPressureHpa = 0.0f;
+uint32_t g_lastEnvSampleMs = 0;
 
 String formatDeg10(int32_t value) {
   const bool negative = value < 0;
@@ -94,6 +102,44 @@ String timeSourceName() {
   }
 
   return String("unsynced");
+}
+
+String formatFloat2(float value) {
+  return String(value, 2);
+}
+
+void initEnvSensor() {
+  if (g_bmp280.begin(0x76) || g_bmp280.begin(0x77)) {
+    g_bmp280.setSampling(
+      Adafruit_BMP280::MODE_NORMAL,
+      Adafruit_BMP280::SAMPLING_X2,
+      Adafruit_BMP280::SAMPLING_X16,
+      Adafruit_BMP280::FILTER_X16,
+      Adafruit_BMP280::STANDBY_MS_500
+    );
+    g_envSensorReady = true;
+    g_lastEnvSampleMs = 0;
+    Serial.println("BMP280 sensor ready");
+    return;
+  }
+
+  g_envSensorReady = false;
+  Serial.println("BMP280 sensor not detected");
+}
+
+void sampleEnvSensorIfDue() {
+  if (!g_envSensorReady) {
+    return;
+  }
+
+  const uint32_t nowMs = millis();
+  if ((nowMs - g_lastEnvSampleMs) < ENV_SAMPLE_INTERVAL_MS) {
+    return;
+  }
+
+  g_lastEnvSampleMs = nowMs;
+  g_envTempC = g_bmp280.readTemperature();
+  g_envPressureHpa = g_bmp280.readPressure() * PA_TO_HPA;
 }
 
 bool syncTimeFromNtp() {
@@ -210,6 +256,9 @@ String buildStatusJson() {
   json += "\"time_source\":\"" + timeSourceName() + "\",";
   json += "\"epoch\":" + String(static_cast<uint32_t>(hasTime ? epochNow : 0)) + ",";
   json += "\"datetime_utc\":\"" + String(hasTime ? formatIsoUtc(utcNow) : "unsynced") + "\",";
+  json += "\"env_sensor\":\"" + String(g_envSensorReady ? "bmp280" : "not-detected") + "\",";
+  json += "\"env_temp_c\":" + String(g_envTempC, 2) + ",";
+  json += "\"env_pressure_hpa\":" + String(g_envPressureHpa, 2) + ",";
   json += "\"wifi_mode\":\"" + String(g_setupPortalActive ? "setup-ap" : (g_wifiConnected ? "station" : "offline")) + "\",";
   json += "\"ip\":\"" + wifiIpString() + "\"";
   json += "}";
@@ -269,6 +318,13 @@ void handleRootPage() {
   page += "<button type='submit'>Set Manual Time</button></form>";
   page += "<small>Use this if NTP is unavailable. Time is used for log metadata.</small></div>";
 
+  page += "<div class='panel'><h2>Environment Sensor (BMP280)</h2><table>";
+  page += "<tr><td>Sensor</td><td id='env_sensor'>" + String(g_envSensorReady ? "bmp280" : "not-detected") + "</td></tr>";
+  page += "<tr><td>Temperature (C)</td><td id='env_temp_c'>" + formatFloat2(g_envTempC) + "</td></tr>";
+  page += "<tr><td>Pressure (hPa)</td><td id='env_pressure_hpa'>" + formatFloat2(g_envPressureHpa) + "</td></tr>";
+  page += "</table>";
+  page += "<small>Used as logger metadata for ambient pressure and temperature.</small></div>";
+
   page += "<div class='panel'><h2>Main System Parameters</h2><table>";
   page += "<tr><td>RPM</td><td id='rpm'>" + String((snapshot.rpm10 + 5U) / 10U) + "</td></tr>";
   page += "<tr><td>Advance (deg BTDC)</td><td id='advance_deg'>" + formatDeg10(snapshot.advanceDeg10) + "</td></tr>";
@@ -310,7 +366,7 @@ void handleRootPage() {
     "const r=await fetch('/api/status');"
     "if(!r.ok){return;}"
     "const d=await r.json();"
-    "const keys=['wifi_mode','ip','datetime_utc','epoch','time_source','rpm','advance_deg','crank_deg','missing_offset_deg','min_advance_deg','max_advance_deg','cdi_delay_us','dwell_us','strobe_enabled','strobe_mask','strobe_pulse_ms','config_version'];"
+    "const keys=['wifi_mode','ip','datetime_utc','epoch','time_source','env_sensor','env_temp_c','env_pressure_hpa','rpm','advance_deg','crank_deg','missing_offset_deg','min_advance_deg','max_advance_deg','cdi_delay_us','dwell_us','strobe_enabled','strobe_mask','strobe_pulse_ms','config_version'];"
     "for(const k of keys){const el=document.getElementById(k); if(el && d[k]!==undefined){el.textContent=d[k];}}"
     "}"
     "setInterval(refresh,1000);"
@@ -443,10 +499,12 @@ void loggerTask(void *param) {
   const TickType_t telemetryPeriod = pdMS_TO_TICKS(200);
   TickType_t nextTelemetry = xTaskGetTickCount();
   uint8_t telemetrySeq = 0;
+  initEnvSensor();
   startLoggerWebInterface();
 
   for (;;) {
     g_webServer.handleClient();
+    sampleEnvSensorIfDue();
     maybeRefreshTimeSync();
 
     if (g_restartRequested && millis() >= g_restartAtMs) {
