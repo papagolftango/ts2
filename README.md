@@ -21,6 +21,19 @@ This split intentionally avoids sending serial data or doing heavy processing in
 
 ## Current features
 
+### Logger-side web interface and boot WiFi setup
+
+- lightweight HTTP server hosted on Core 1 only (logger side)
+- boot-time WiFi station connect using stored credentials from NVS
+- automatic setup AP fallback when credentials are missing/invalid:
+  - AP SSID: `ts2-setup`
+  - AP password: `ts2setup1`
+- web boot page supports entering new SSID/password credentials
+- credentials are persisted to NVS and applied after automatic reboot
+- dashboard shows live telemetry and key system configuration values
+- dashboard includes editable panels for key ignition/runtime parameters
+- JSON endpoint at `/api/status` for machine-readable status polling
+
 ### Trigger and RPM handling
 
 - trigger input on GPIO 35 with interrupt-based edge capture
@@ -52,6 +65,7 @@ This split intentionally avoids sending serial data or doing heavy processing in
 - telemetry packet: time, RPM, advance, crank angle, flags
 - checksum validation on inbound and outbound frames
 - message exchange kept narrow and efficient to avoid adding jitter to the ignition loop
+- web UI processing remains on Core 1 and does not run in the trigger ISR or spark scheduling path
 
 ### Debug strobe
 
@@ -80,7 +94,13 @@ This wheel is intentionally set up to keep the visual timing convention clear:
 ## Project structure
 
 - platformio.ini - PlatformIO project configuration for ESP32
-- src/main.cpp - real-time ECU logic, binary protocol, timing math, strobe handling, and dual-core task split
+- src/main.cpp - startup/orchestration, queue creation, and task startup
+- src/ecu_shared.h - shared constants, packet structures, globals, and interfaces
+- src/ecu_shared.cpp - shared timing math and binary packet encode/decode logic
+- src/realtime_core.h - real-time module interface
+- src/realtime_core.cpp - Core 0 real-time ignition ISR, strobe timing, and spark scheduling task
+- src/logger_core.h - logger module interface
+- src/logger_core.cpp - Core 1 logger, web UI, WiFi setup portal, editable config panel, and telemetry publishing
 - tests/test_timing_harness.py - host-side timing and protocol validation
 - docs/timing-wheel.svg - timing wheel reference diagram
 
@@ -92,6 +112,12 @@ From the project root:
 pio run
 pio device monitor
 ```
+
+Web usage notes:
+
+- if station credentials are valid, browse to the logger-side station IP shown on serial output
+- if station connect fails, connect to the setup AP (`ts2-setup` / `ts2setup1`) and browse to `http://192.168.4.1/`
+- submit SSID/password from the boot page; the device reboots and retries station mode
 
 ## Safety and engineering notes
 
