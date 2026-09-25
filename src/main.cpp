@@ -1,7 +1,9 @@
 #include <Arduino.h>
+#include <esp_timer.h>
 
 constexpr uint8_t TRIGGER_INPUT_PIN = 35;
 constexpr uint8_t IGNITION_OUTPUT_PIN = 4;
+constexpr uint8_t DEBUG_STROBE_PIN = 25;
 constexpr uint8_t TRIGGER_EDGES_PER_REV = 35; // Optical 36:1 wheel convention: 35 slot edges + 1 missing reference gap
 constexpr uint32_t SAMPLE_PERIOD_MS = 10;
 constexpr uint16_t MAX_RPM = 10000;
@@ -12,7 +14,20 @@ constexpr uint32_t MAX_VALID_TOOTH_PERIOD_US = 250000;
 constexpr uint32_t MISSING_TOOTH_GAP_FACTOR = 15; // 1.5x normal tooth period threshold
 constexpr uint32_t CDI_FIRE_DELAY_US = 250; // calibrated delay from fire edge to actual spark output
 constexpr uint32_t IGNITION_DWELL_US = 2500; // 2.5 ms active-high dwell for the coil/CDI trigger
+constexpr uint32_t DEBUG_STROBE_PULSE_US = 5000; // 5ms pulse is long enough to see on a wheel with a strobe light
 constexpr int16_t MISSING_TOOTH_TO_TDC_OFFSET_DEG10 = 650; // 65.0° reference offset; missing tooth occurs before TDC and is setup-calibrated
+constexpr uint16_t DEFAULT_MIN_ADVANCE_DEG10 = 50;
+constexpr uint16_t DEFAULT_MAX_ADVANCE_DEG10 = 350;
+constexpr uint16_t DEFAULT_CDI_DELAY_US = CDI_FIRE_DELAY_US;
+constexpr uint16_t DEFAULT_DWELL_US = IGNITION_DWELL_US;
+
+enum StrobeMarker : uint8_t {
+  STROBE_NONE = 0,
+  STROBE_TDC = 1 << 0,
+  STROBE_MISSING_TOOTH = 1 << 1,
+  STROBE_CURRENT_ADVANCE = 1 << 2,
+  STROBE_ALL = STROBE_TDC | STROBE_MISSING_TOOTH | STROBE_CURRENT_ADVANCE,
+};
 
 struct IgnitionState {
   uint32_t edgeCount = 0;
@@ -23,6 +38,62 @@ struct IgnitionState {
   uint16_t sparkAdvanceDeg10 = 0;
   uint16_t dwellMs10 = 0;
 };
+
+struct LoggerConfig {
+  uint16_t version = 0;
+  int16_t missingToothOffsetDeg10 = MISSING_TOOTH_TO_TDC_OFFSET_DEG10;
+  uint16_t minAdvanceDeg10 = DEFAULT_MIN_ADVANCE_DEG10;
+  uint16_t maxAdvanceDeg10 = DEFAULT_MAX_ADVANCE_DEG10;
+  uint16_t cdiDelayUs = DEFAULT_CDI_DELAY_US;
+  uint16_t dwellUs = DEFAULT_DWELL_US;
+  uint8_t strobeMarkerMask = STROBE_TDC;
+  uint8_t strobeEnabled = 1;
+  uint16_t strobePulseUs = static_cast<uint16_t>(DEBUG_STROBE_PULSE_US / 1000U);
+};
+
+struct TelemetrySnapshot {
+  uint32_t timeUs = 0;
+  uint16_t rpm10 = 0;
+  uint16_t advanceDeg10 = 0;
+  uint16_t crankAngleDeg10 = 0;
+  uint8_t flags = 0;
+};
+
+constexpr uint8_t PROTOCOL_START_BYTE = 0xA5;
+constexpr uint8_t MSG_TYPE_CONFIG = 0x10;
+constexpr uint8_t MSG_TYPE_TELEMETRY = 0x20;
+
+#pragma pack(push, 1)
+struct ConfigPacket {
+  uint8_t start;
+  uint8_t type;
+  uint8_t seq;
+  uint8_t length;
+  uint16_t version;
+  int16_t missingToothOffsetDeg10;
+  uint16_t minAdvanceDeg10;
+  uint16_t maxAdvanceDeg10;
+  uint16_t cdiDelayUs;
+  uint16_t dwellUs;
+  uint8_t strobeMarkerMask;
+  uint8_t strobeEnabled;
+  uint16_t strobePulseUs;
+  uint8_t checksum;
+};
+
+struct TelemetryPacket {
+  uint8_t start;
+  uint8_t type;
+  uint8_t seq;
+  uint8_t length;
+  uint32_t timeUs;
+  uint16_t rpm10;
+  uint16_t advanceDeg10;
+  uint16_t crankAngleDeg10;
+  uint8_t flags;
+  uint8_t checksum;
+};
+#pragma pack(pop)
 
 // BTDC angle lookup in tenths of a degree.
 // This is a safe cranking/low-RPM baseline at 5° BTDC, with advance increasing with RPM
@@ -40,7 +111,19 @@ static volatile bool g_missingToothDetected = false;
 static volatile uint32_t g_lastGoodPeriodUs = 0;
 static volatile uint32_t g_sparkDueUs = 0;
 static volatile bool g_sparkPending = false;
+static volatile int16_t g_missingToothOffsetDeg10 = MISSING_TOOTH_TO_TDC_OFFSET_DEG10;
+static volatile uint16_t g_minAdvanceDeg10 = DEFAULT_MIN_ADVANCE_DEG10;
+static volatile uint16_t g_maxAdvanceDeg10 = DEFAULT_MAX_ADVANCE_DEG10;
+static volatile uint16_t g_cdiDelayUs = DEFAULT_CDI_DELAY_US;
+static volatile uint16_t g_dwellUs = DEFAULT_DWELL_US;
+static volatile uint8_t g_strobeMarkerMask = STROBE_TDC;
+static volatile uint8_t g_strobeEnabled = 1;
+static volatile uint16_t g_strobePulseUs = static_cast<uint16_t>(DEBUG_STROBE_PULSE_US / 1000U);
+static volatile uint32_t g_configVersion = 0;
+static esp_timer_handle_t g_strobeOffTimer = nullptr;
 static QueueHandle_t ignitionQueue = nullptr;
+static QueueHandle_t configQueue = nullptr;
+static QueueHandle_t telemetryQueue = nullptr;
 
 uint32_t estimateRpmTenths(uint32_t periodUs) {
   if (periodUs == 0) {
@@ -54,11 +137,11 @@ uint32_t estimateRpmTenths(uint32_t periodUs) {
 
 uint16_t lookupAdvanceTenthsDeg(uint16_t rpm) {
   if (rpm < CRANKING_RPM_THRESHOLD) {
-    return MIN_ADVANCE_TENTHS_DEG;
+    return g_minAdvanceDeg10;
   }
 
   if (rpm >= MAX_RPM) {
-    return kAdvanceTable[ADVANCE_TABLE_SIZE - 1];
+    return g_maxAdvanceDeg10;
   }
 
   const uint32_t tableIndex = (static_cast<uint32_t>(rpm) * (ADVANCE_TABLE_SIZE - 1U)) / MAX_RPM;
@@ -86,7 +169,7 @@ int32_t computeSparkTimeUs(uint32_t revPeriodUs, uint16_t advanceDeg10, int16_t 
   const uint32_t degreesPerRev = 3600U;
   const uint32_t sparkAngleFromRef = static_cast<uint32_t>(advanceDeg10 + refOffsetDeg10);
   const uint32_t sparkFraction = (sparkAngleFromRef * revPeriodUs) / degreesPerRev;
-  return static_cast<int32_t>(revPeriodUs - sparkFraction - CDI_FIRE_DELAY_US);
+  return static_cast<int32_t>(revPeriodUs - sparkFraction - g_cdiDelayUs);
 }
 
 void triggerIgnitionPulse() {
@@ -100,11 +183,11 @@ void triggerIgnitionPulse() {
   g_sparkPending = false;
 }
 
-void scheduleNextIgnitionEvent(uint32_t revPeriodUs, uint16_t advanceDeg10) {
+void scheduleNextIgnitionEvent(uint32_t revPeriodUs, uint16_t advanceDeg10, int16_t missingToothOffsetDeg10) {
   const uint32_t degreesPerRev = 3600U;
-  const uint32_t advanceFromReferenceUs = (static_cast<uint32_t>(advanceDeg10 + MISSING_TOOTH_TO_TDC_OFFSET_DEG10) * revPeriodUs) / degreesPerRev;
+  const uint32_t advanceFromReferenceUs = (static_cast<uint32_t>(advanceDeg10 + missingToothOffsetDeg10) * revPeriodUs) / degreesPerRev;
   const uint32_t nowUs = micros();
-  const uint32_t fireWindowUs = (advanceFromReferenceUs > CDI_FIRE_DELAY_US) ? (advanceFromReferenceUs - CDI_FIRE_DELAY_US) : 0U;
+  const uint32_t fireWindowUs = (advanceFromReferenceUs > g_cdiDelayUs) ? (advanceFromReferenceUs - g_cdiDelayUs) : 0U;
 
   g_sparkDueUs = nowUs + fireWindowUs;
   g_sparkPending = true;
@@ -138,11 +221,133 @@ void IRAM_ATTR onTriggerEdge() {
   }
 }
 
+uint8_t calcChecksum8(const uint8_t *buffer, size_t len) {
+  uint8_t sum = 0;
+  for (size_t i = 0; i < len; ++i) {
+    sum += buffer[i];
+  }
+  return sum;
+}
+
+void sendConfigPacket(const LoggerConfig &config, uint8_t seq) {
+  ConfigPacket packet{};
+  packet.start = PROTOCOL_START_BYTE;
+  packet.type = MSG_TYPE_CONFIG;
+  packet.seq = seq;
+  packet.length = sizeof(ConfigPacket) - 4U;
+  packet.version = config.version;
+  packet.missingToothOffsetDeg10 = config.missingToothOffsetDeg10;
+  packet.minAdvanceDeg10 = config.minAdvanceDeg10;
+  packet.maxAdvanceDeg10 = config.maxAdvanceDeg10;
+  packet.cdiDelayUs = config.cdiDelayUs;
+  packet.dwellUs = config.dwellUs;
+  packet.strobeMarkerMask = config.strobeMarkerMask;
+  packet.strobeEnabled = config.strobeEnabled;
+  packet.strobePulseUs = config.strobePulseUs;
+
+  uint8_t bytes[sizeof(ConfigPacket)];
+  memcpy(bytes, &packet, sizeof(packet));
+  packet.checksum = calcChecksum8(bytes + 1, sizeof(ConfigPacket) - 2);
+  Serial.write(reinterpret_cast<const uint8_t *>(&packet), sizeof(packet));
+}
+
+void sendTelemetryPacket(const TelemetrySnapshot &snapshot, uint8_t seq) {
+  TelemetryPacket packet{};
+  packet.start = PROTOCOL_START_BYTE;
+  packet.type = MSG_TYPE_TELEMETRY;
+  packet.seq = seq;
+  packet.length = 9;
+  packet.timeUs = snapshot.timeUs;
+  packet.rpm10 = snapshot.rpm10;
+  packet.advanceDeg10 = snapshot.advanceDeg10;
+  packet.crankAngleDeg10 = snapshot.crankAngleDeg10;
+  packet.flags = snapshot.flags;
+
+  uint8_t bytes[sizeof(TelemetryPacket)];
+  memcpy(bytes, &packet, sizeof(packet));
+  packet.checksum = calcChecksum8(bytes + 1, sizeof(TelemetryPacket) - 2);
+  Serial.write(reinterpret_cast<const uint8_t *>(&packet), sizeof(packet));
+}
+
+bool consumeConfigPacket(LoggerConfig &configOut) {
+  if (Serial.available() < static_cast<int>(sizeof(ConfigPacket))) {
+    return false;
+  }
+
+  uint8_t bytes[sizeof(ConfigPacket)];
+  Serial.readBytes(reinterpret_cast<char *>(bytes), sizeof(bytes));
+
+  if (bytes[0] != PROTOCOL_START_BYTE) {
+    return false;
+  }
+
+  if (bytes[1] != MSG_TYPE_CONFIG) {
+    return false;
+  }
+
+  const uint8_t expectedChecksum = calcChecksum8(bytes + 1, sizeof(ConfigPacket) - 2);
+  if (bytes[sizeof(ConfigPacket) - 1] != expectedChecksum) {
+    return false;
+  }
+
+  ConfigPacket packet{};
+  memcpy(&packet, bytes, sizeof(packet));
+  configOut.version = packet.version;
+  configOut.missingToothOffsetDeg10 = packet.missingToothOffsetDeg10;
+  configOut.minAdvanceDeg10 = packet.minAdvanceDeg10;
+  configOut.maxAdvanceDeg10 = packet.maxAdvanceDeg10;
+  configOut.cdiDelayUs = packet.cdiDelayUs;
+  configOut.dwellUs = packet.dwellUs;
+  configOut.strobeMarkerMask = packet.strobeMarkerMask;
+  configOut.strobeEnabled = packet.strobeEnabled;
+  configOut.strobePulseUs = packet.strobePulseUs;
+  return true;
+}
+
+void strobeOffCallback(void *arg) {
+  (void)arg;
+  digitalWrite(DEBUG_STROBE_PIN, LOW);
+}
+
+void fireStrobeMarker(uint8_t markerMask, uint16_t crankAngleDeg10, uint16_t advanceDeg10) {
+  if (g_strobeEnabled == 0 || g_strobeMarkerMask == STROBE_NONE) {
+    return;
+  }
+
+  const uint8_t activeMask = g_strobeMarkerMask & markerMask;
+  if (activeMask == 0) {
+    return;
+  }
+
+  digitalWrite(DEBUG_STROBE_PIN, HIGH);
+  if (g_strobeOffTimer != nullptr) {
+    esp_timer_stop(g_strobeOffTimer);
+    esp_timer_start_once(g_strobeOffTimer, static_cast<uint64_t>(g_strobePulseUs) * 1000ULL);
+  }
+  (void)crankAngleDeg10;
+  (void)advanceDeg10;
+}
+
 void realtimeTask(void *param) {
   TickType_t lastWake = xTaskGetTickCount();
   IgnitionState state{};
+  LoggerConfig config{};
+  uint8_t configSeq = 0;
 
   for (;;) {
+    while (xQueueReceive(configQueue, &config, 0) == pdTRUE) {
+      g_missingToothOffsetDeg10 = config.missingToothOffsetDeg10;
+      g_minAdvanceDeg10 = config.minAdvanceDeg10;
+      g_maxAdvanceDeg10 = config.maxAdvanceDeg10;
+      g_cdiDelayUs = config.cdiDelayUs;
+      g_dwellUs = config.dwellUs;
+      g_strobeMarkerMask = config.strobeMarkerMask;
+      g_strobeEnabled = config.strobeEnabled;
+      g_strobePulseUs = config.strobePulseUs;
+      g_configVersion = config.version;
+      sendConfigPacket(config, configSeq++);
+    }
+
     if (g_periodUs > 0) {
       const uint32_t rpm10 = estimateRpmTenths(g_periodUs);
       const uint16_t rpm = static_cast<uint16_t>((rpm10 + 5U) / 10U);
@@ -157,22 +362,34 @@ void realtimeTask(void *param) {
       state.rpm10 = rpm10;
       state.crankAngleDeg10 = crankAngleDeg10;
       state.sparkAdvanceDeg10 = sparkAdvanceDeg10;
-      state.dwellMs10 = static_cast<uint16_t>((200U + (rpm * 50U)) / 10U); // rough 2.0ms + rpm-dependent dwell in 0.1ms units
+      state.dwellMs10 = static_cast<uint16_t>((200U + (rpm * 50U)) / 10U);
 
       if (g_missingToothDetected) {
-        const int32_t adjustedSparkUs = computeSparkTimeUs(g_periodUs, sparkAdvanceDeg10, MISSING_TOOTH_TO_TDC_OFFSET_DEG10);
-        Serial.printf("missing tooth detected; spark window=%ld us with cdi delay=%lu us\n",
-                      adjustedSparkUs,
-                      static_cast<unsigned long>(CDI_FIRE_DELAY_US));
-        scheduleNextIgnitionEvent(g_periodUs, sparkAdvanceDeg10);
+        const int32_t adjustedSparkUs = computeSparkTimeUs(g_periodUs, sparkAdvanceDeg10, g_missingToothOffsetDeg10);
+        fireStrobeMarker(STROBE_MISSING_TOOTH, crankAngleDeg10, sparkAdvanceDeg10);
+        scheduleNextIgnitionEvent(g_periodUs, sparkAdvanceDeg10, g_missingToothOffsetDeg10);
         g_missingToothDetected = false;
+        (void)adjustedSparkUs;
       }
 
       if (g_sparkPending && micros() >= g_sparkDueUs) {
+        fireStrobeMarker(STROBE_CURRENT_ADVANCE, crankAngleDeg10, sparkAdvanceDeg10);
         triggerIgnitionPulse();
       }
 
+      if (g_strobeEnabled && (g_strobeMarkerMask & STROBE_TDC) != 0 && (g_edgeCount % TRIGGER_EDGES_PER_REV) == 0) {
+        fireStrobeMarker(STROBE_TDC, crankAngleDeg10, sparkAdvanceDeg10);
+      }
+
       xQueueSend(ignitionQueue, &state, 0);
+
+      TelemetrySnapshot snapshot{};
+      snapshot.timeUs = micros();
+      snapshot.rpm10 = static_cast<uint16_t>(rpm10);
+      snapshot.advanceDeg10 = sparkAdvanceDeg10;
+      snapshot.crankAngleDeg10 = crankAngleDeg10;
+      snapshot.flags = g_missingToothDetected ? 1U : 0U;
+      xQueueOverwrite(telemetryQueue, &snapshot);
     }
 
     vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(SAMPLE_PERIOD_MS));
@@ -180,23 +397,27 @@ void realtimeTask(void *param) {
 }
 
 void loggerTask(void *param) {
-  IgnitionState state{};
+  LoggerConfig config{};
+  TelemetrySnapshot snapshot{};
+  const TickType_t telemetryPeriod = pdMS_TO_TICKS(200);
+  TickType_t nextTelemetry = xTaskGetTickCount();
+  uint8_t telemetrySeq = 0;
 
   for (;;) {
-    if (xQueueReceive(ignitionQueue, &state, portMAX_DELAY) == pdTRUE) {
-      const float rpm = state.rpm10 / 10.0f;
-      const float crankAngle = state.crankAngleDeg10 / 10.0f;
-      const float sparkAdvance = state.sparkAdvanceDeg10 / 10.0f;
-      const float dwellMs = state.dwellMs10 / 10.0f;
-
-      Serial.printf(
-        "rpm=%.1f crankAngle=%.1f sparkAdv=%.1f dwell=%.2fms edges=%lu\n",
-        rpm,
-        crankAngle,
-        sparkAdvance,
-        dwellMs,
-        state.edgeCount);
+    LoggerConfig incomingConfig{};
+    if (consumeConfigPacket(incomingConfig)) {
+      xQueueOverwrite(configQueue, &incomingConfig);
+      Serial.write("ACK\n");
     }
+
+    if (xTaskGetTickCount() >= nextTelemetry) {
+      if (xQueueReceive(telemetryQueue, &snapshot, 0) == pdTRUE) {
+        sendTelemetryPacket(snapshot, telemetrySeq++);
+      }
+      nextTelemetry = xTaskGetTickCount() + telemetryPeriod;
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(10));
   }
 }
 
@@ -207,13 +428,25 @@ void setup() {
 
   pinMode(TRIGGER_INPUT_PIN, INPUT_PULLUP);
   pinMode(IGNITION_OUTPUT_PIN, OUTPUT);
+  pinMode(DEBUG_STROBE_PIN, OUTPUT);
   digitalWrite(IGNITION_OUTPUT_PIN, LOW);
+  digitalWrite(DEBUG_STROBE_PIN, LOW);
+
+  esp_timer_create_args_t strobeArgs{};
+  strobeArgs.callback = strobeOffCallback;
+  strobeArgs.arg = nullptr;
+  strobeArgs.name = "strobe_off";
+  esp_timer_create(&strobeArgs, &g_strobeOffTimer);
+
   // These IR optocoupler modules are usually beam-break sensors; the exact edge polarity
   // depends on wiring, so we trigger on the beam-interrupted state and monitor it in code.
   attachInterrupt(digitalPinToInterrupt(TRIGGER_INPUT_PIN), onTriggerEdge, CHANGE);
 
   ignitionQueue = xQueueCreate(10, sizeof(IgnitionState));
-  if (ignitionQueue == nullptr) {
+  configQueue = xQueueCreate(1, sizeof(LoggerConfig));
+  telemetryQueue = xQueueCreate(1, sizeof(TelemetrySnapshot));
+
+  if (ignitionQueue == nullptr || configQueue == nullptr || telemetryQueue == nullptr) {
     Serial.println("Queue creation failed");
     while (true) {
       delay(100);

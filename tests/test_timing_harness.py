@@ -108,11 +108,94 @@ def verify_spark_time_calc() -> None:
     assert spark_us > 0, f"spark time should be positive: {spark_us} us"
 
 
+def build_config_packet(
+    version: int,
+    missing_tooth_deg10: int,
+    min_advance_deg10: int = 50,
+    max_advance_deg10: int = 350,
+    cdi_delay_us: int = 250,
+    dwell_us: int = 2500,
+    strobe_mask: int = 0,
+    strobe_enabled: int = 0,
+    strobe_pulse_ms: int = 5,
+) -> bytes:
+    packet = bytearray()
+    packet.extend([0xA5, 0x10, 0x01, 0x0F])
+    packet.extend((version & 0xFF, (version >> 8) & 0xFF))
+    packet.extend((missing_tooth_deg10 & 0xFF, (missing_tooth_deg10 >> 8) & 0xFF))
+    packet.extend((min_advance_deg10 & 0xFF, (min_advance_deg10 >> 8) & 0xFF))
+    packet.extend((max_advance_deg10 & 0xFF, (max_advance_deg10 >> 8) & 0xFF))
+    packet.extend((cdi_delay_us & 0xFF, (cdi_delay_us >> 8) & 0xFF))
+    packet.extend((dwell_us & 0xFF, (dwell_us >> 8) & 0xFF))
+    packet.append(strobe_mask)
+    packet.append(strobe_enabled)
+    packet.extend((strobe_pulse_ms & 0xFF, (strobe_pulse_ms >> 8) & 0xFF))
+    packet.append(sum(packet[1:]) & 0xFF)
+    return bytes(packet)
+
+
+def parse_config_packet(raw: bytes) -> dict[str, int]:
+    if len(raw) != 21:
+        raise ValueError(f"expected 21-byte config packet, got {len(raw)}")
+    if raw[0] != 0xA5 or raw[1] != 0x10:
+        raise ValueError(f"invalid config frame: {raw!r}")
+    checksum = sum(raw[1:-1]) & 0xFF
+    if checksum != raw[-1]:
+        raise ValueError(f"checksum mismatch: {raw!r}")
+    version = raw[4] | (raw[5] << 8)
+    offset = raw[6] | (raw[7] << 8)
+    min_advance = raw[8] | (raw[9] << 8)
+    max_advance = raw[10] | (raw[11] << 8)
+    cdi_delay = raw[12] | (raw[13] << 8)
+    dwell = raw[14] | (raw[15] << 8)
+    strobe_mask = raw[16]
+    strobe_enabled = raw[17]
+    strobe_pulse_ms = raw[18] | (raw[19] << 8)
+    return {
+        "version": version,
+        "missing_tooth": offset,
+        "min_advance": min_advance,
+        "max_advance": max_advance,
+        "cdi_delay": cdi_delay,
+        "dwell": dwell,
+        "strobe_mask": strobe_mask,
+        "strobe_enabled": strobe_enabled,
+        "strobe_pulse_ms": strobe_pulse_ms,
+    }
+
+
+def build_telemetry_packet(rpm10: int, advance_deg10: int, crank_deg10: int) -> bytes:
+    packet = bytearray()
+    packet.extend([0xA5, 0x20, 0x01, 0x09])
+    packet.extend((0x00, 0x00, 0x00, 0x00))
+    packet.extend((rpm10 & 0xFF, (rpm10 >> 8) & 0xFF))
+    packet.extend((advance_deg10 & 0xFF, (advance_deg10 >> 8) & 0xFF))
+    packet.extend((crank_deg10 & 0xFF, (crank_deg10 >> 8) & 0xFF))
+    packet.append(0x00)
+    packet.append(sum(packet[1:]) & 0xFF)
+    return bytes(packet)
+
+
 def main() -> None:
     print("Running timing harness checks...")
     verify_advance_curve()
     verify_spark_time_calc()
     simulate_missing_tooth_reference()
+
+    cfg = parse_config_packet(build_config_packet(7, 650, 50, 350, 250, 2500, 0x05, 1, 5))
+    assert cfg["missing_tooth"] == 650, cfg
+    assert cfg["version"] == 7, cfg
+    assert cfg["min_advance"] == 50, cfg
+    assert cfg["max_advance"] == 350, cfg
+    assert cfg["cdi_delay"] == 250, cfg
+    assert cfg["dwell"] == 2500, cfg
+    assert cfg["strobe_mask"] == 0x05, cfg
+    assert cfg["strobe_enabled"] == 1, cfg
+    assert cfg["strobe_pulse_ms"] == 5, cfg
+
+    telemetry = build_telemetry_packet(1800, 220, 90)
+    assert telemetry[0] == 0xA5 and telemetry[1] == 0x20, telemetry
+    assert telemetry[-1] == (sum(telemetry[1:-1]) & 0xFF), telemetry
 
     for rpm in [800, 2000, 5000, 10000]:
         advance = lookup_advance_tenths_deg(rpm)

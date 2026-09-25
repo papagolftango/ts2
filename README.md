@@ -1,43 +1,90 @@
-# ts2 ESP32 ignition and logging platform
+# ts2 ESP32 dual-core ignition ECU
 
-This project is a PlatformIO-based ESP32 application for a dual-core engine control architecture. The design separates the real-time ignition work from the telemetry/logging work so the timing-critical functions can stay deterministic while diagnostic data is streamed or stored without disturbing the ignition loop.
+This project is a PlatformIO-based ESP32 application for a real-time engine ignition controller with a separate logger/diagnostic core. The design deliberately keeps the timing-critical engine functions on Core 0 and moves low-priority telemetry, config handling, and diagnostics onto Core 1 so the ignition loop remains deterministic.
+
+## System goals
+
+- measure trigger-wheel timing on a 36:1 wheel
+- detect a missing-tooth reference and calibrate its offset from TDC
+- compute RPM using edge-to-edge timing
+- schedule ignition events using a safe integer-based advance model
+- provide a configurable map for a minimum advance and a mapped RPM-based advance curve
+- produce a compact binary telemetry stream for logger-side diagnostics
+- expose a hardware-timed debug strobe for visual timing checks against a degree-wheel reference
 
 ## Architecture
 
-- Core 0: real-time engine timing and ignition control
-- Core 1: logger and diagnostics task
+- Core 0: real-time ignition, trigger capture, spark scheduling, dwell output, strobe timing
+- Core 1: serial logger, config receive, low-rate telemetry publishing
 
-The real-time side is intended to handle crank-angle timing, trigger-wheel edge capture, spark advance calculations, and eventually full ignition mapping. The logger side is expected to record RPM, angle, sensor health, and event data in a lower-priority task.
+This split intentionally avoids sending serial data or doing heavy processing inside the time-critical edge path.
 
-## Trigger wheel
+## Current features
 
-The initial experiments use an optical trigger wheel. In practice, this means a 36:1 optical pattern such as a slotted or shuttered wheel producing 35 timing edges per engine revolution plus a missing-slot or reference gap. The code is structured so the wheel conventions can be adjusted as the exact sensor layout is confirmed.
+### Trigger and RPM handling
 
-The actual sensor being used for the first experiments is a DAOKAI IR slotted optocoupler module, operating from 3.3V to 5V and producing a digital switch output. These modules are typically beam-break devices: the output changes state when the IR beam is interrupted, and they are usually best read on the ESP32 using a pull-up input and an interrupt on the beam-break edge. The exact polarity can be inverted depending on the module wiring and beam orientation, so the code is set up to handle the practical break-beam case.
+- trigger input on GPIO 35 with interrupt-based edge capture
+- 35-edge wheel convention with one missing-tooth reference gap
+- period measurement using microsecond timestamps
+- RPM estimation from the measured tooth period
+- detection threshold for the missing-tooth event based on a gap larger than normal tooth spacing
 
-## Current scope
+### Timing and advance model
 
-- ESP32 dual-core skeleton
-- Trigger input edge detection on a dedicated GPIO
-- RPM estimation from edge period
-- queue-based communication from the real-time core to the logger core
-- serial telemetry output for development and validation
+- integer-based timing math in tenths of a degree and microseconds
+- low-RPM minimum advance fallback at 5.0° BTDC
+- monotonic RPM-based advance lookup table
+- interpolation across the advance curve for smoother timing
+- configurable minimum and maximum advance values in the logger config packet
+- fixed calibrated delay before ignition output, representing CDI/coil delay
 
-## Planned evolution
+### Spark generation
 
-1. Capture and validate raw trigger signal timing
-2. Add crank angle and missing-tooth detection
-3. Implement ignition dwell and advance calculation
-4. Add spark channel timing and output driver support
-5. Add mapped advance tables and temperature compensation
-6. Add storage and dashboard logging for long sessions
+- ignition output on GPIO 4
+- fixed dwell pulse for the coil/CDI trigger
+- scheduled spark event computed from current RPM and missing-tooth offset
+- safe fallback timing for cranking and low-RPM operation
 
-## Workspace structure
+### Logger and config protocol
 
-- platformio.ini - PlatformIO configuration for the ESP32
-- src/main.cpp - main application with both cores and the starter timing logic
+- compact binary message format rather than text-based serial traffic
+- config packet: version, missing-tooth offset, min/max advance, CDI delay, dwell, strobe settings
+- telemetry packet: time, RPM, advance, crank angle, flags
+- checksum validation on inbound and outbound frames
+- message exchange kept narrow and efficient to avoid adding jitter to the ignition loop
 
-## Getting started
+### Debug strobe
+
+- debug output on GPIO 25
+- hardware-timed pulse using ESP32 `esp_timer`, not a blocking software delay
+- default enabled state for bench validation
+- configurable markers:
+  - TDC
+  - missing tooth
+  - current advance
+- pulse width configurable in milliseconds/microseconds terms, with a safe default of 5 ms
+
+## Timing model and reference wheel
+
+The project uses a conceptual degree wheel as a calibration aid. The SVG shown below is used to visualise the wheel geometry, missing-tooth reference, and the advance window from the safe minimum to the maximum tuned advance.
+
+![Timing reference wheel](docs/timing-wheel.svg)
+
+This wheel is intentionally set up to keep the visual timing convention clear:
+
+- 0° is at the top of the wheel
+- the labels run anti-clockwise for the timing reference
+- the missing-tooth marker and TDC reference are shown distinctly
+- the advance arc spans the calibrated window from low to high advance
+
+## Project structure
+
+- platformio.ini - PlatformIO project configuration for ESP32
+- src/main.cpp - real-time ECU logic, binary protocol, timing math, strobe handling, and dual-core task split
+- tests/test_timing_harness.py - host-side timing and protocol validation
+- docs/timing-wheel.svg - timing wheel reference diagram
+
+## Build and run
 
 From the project root:
 
@@ -46,15 +93,21 @@ pio run
 pio device monitor
 ```
 
+## Safety and engineering notes
 
-## Timing reference wheel
+- Core 0 remains the hard real-time path and should not be burdened with WiFi/Bluetooth stacks or serial logging traffic.
+- The strobe is a debug aid and should be used during setup and calibration rather than as a normal operating output.
+- The missing-tooth offset is a calibrated engine parameter and must be confirmed on the actual hardware setup.
+- The advance table is intentionally conservative and should be tuned against real engine data, not assumed final.
 
-This degree-wheel view is the conceptual reference for the trigger-wheel timing model. It shows the fixed TDC reference, the missing-tooth reference marker, and the usable advance window from the minimum safe advance to the maximum tuned advance. The timing labels run anti-clockwise from TDC, while the engine itself rotates clockwise, so the ignition advance appears to the left of TDC on the wheel.
+## Current status
 
-![Timing reference wheel](docs/timing-wheel.svg)
+This project is now at the point where it can:
 
-The aim is to eventually align the trigger wheel marks with this model so a strobe can highlight the expected TDC mark, the missing-tooth reference, and the spark advance arc while the engine is being calibrated.
+- measure trigger timing
+- estimate RPM and crank angle
+- schedule ignition using a calibrated advance map
+- communicate compact configuration and telemetry over a binary protocol
+- flash a debug strobe for visual wheel verification
 
-## Notes
-
-This is intentionally a starter project for an engine-control application. The real-time core should remain focused on timing-critical work, and any heavier processing such as logging, mapping, or data export should live on the non-real-time core or be queued asynchronously.
+The next practical phase is live bench validation of the trigger-wheel offset, spark timing, and advance map against the real engine.
