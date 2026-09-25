@@ -1,0 +1,63 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ts2 Logger Setup Preview</title>
+  <style>
+    body { font-family: Segoe UI, Arial, sans-serif; background: #f2f5f8; color: #1f2d3a; margin: 0; padding: 16px; }
+    .panel { background: #fff; border-radius: 10px; padding: 14px; margin-bottom: 12px; box-shadow: 0 2px 8px rgba(0,0,0,.08); }
+    h1 { margin: 0 0 10px; font-size: 20px; }
+    h2 { margin: 0 0 8px; font-size: 16px; }
+    label { display: block; font-size: 13px; margin-top: 8px; }
+    input, select { width: 100%; padding: 8px; margin: 6px 0; border: 1px solid #c9d5e0; border-radius: 6px; box-sizing: border-box; }
+    button, a { display: inline-block; padding: 8px 12px; border: 0; border-radius: 6px; background: #1d6fa5; color: #fff; text-decoration: none; font-weight: 600; }
+    small { color: #4f5f6f; }
+  </style>
+</head>
+<body>
+  <div class="panel">
+    <h1>Setup</h1>
+    <a href="logger-dashboard-preview.html">Back to Telemetry</a>
+  </div>
+
+  <div class="panel">
+    <h2>Edit Key Parameters</h2>
+    <form>
+      <label>Missing->TDC Offset (deg10)</label>
+      <input type="number" min="-1800" max="1800" value="650">
+      <label>Min Advance (deg10)</label>
+      <input type="number" min="0" max="600" value="50">
+      <label>Max Advance (deg10)</label>
+      <input type="number" min="0" max="600" value="350">
+      <label>CDI Delay (us)</label>
+      <input type="number" min="0" max="5000" value="250">
+      <label>Dwell (us)</label>
+      <input type="number" min="100" max="20000" value="2500">
+      <label>Strobe Enabled (bool)</label>
+      <select>
+        <option selected>1</option>
+        <option>0</option>
+      </select>
+      <label>Strobe Mask (bitmask)</label>
+      <input type="number" min="0" max="7" value="1">
+      <label>Strobe Pulse (ms)</label>
+      <input type="number" min="1" max="50" value="5">
+      <button type="button">Apply Parameters</button>
+    </form>
+    <small>Ranges and labels are sourced from the shared parameter catalog.</small>
+  </div>
+
+  <div class="panel">
+    <h2>Boot WiFi Credentials</h2>
+    <form>
+      <label>SSID</label>
+      <input maxlength="32" placeholder="your-ssid">
+      <label>Password</label>
+      <input type="password" maxlength="63" placeholder="password">
+      <button type="button">Save & Reboot</button>
+    </form>
+    <small>Credentials are stored in NVS and applied on next boot.</small>
+  </div>
+</body>
+</html>

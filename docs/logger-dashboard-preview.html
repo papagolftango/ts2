@@ -1,0 +1,57 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ts2 Logger Preview</title>
+  <style>
+    body { font-family: Segoe UI, Arial, sans-serif; background: #f2f5f8; color: #1f2d3a; margin: 0; padding: 16px; }
+    .panel { background: #fff; border-radius: 10px; padding: 14px; margin-bottom: 12px; box-shadow: 0 2px 8px rgba(0,0,0,.08); }
+    h1 { margin: 0 0 10px; font-size: 20px; }
+    h2 { margin: 0 0 8px; font-size: 16px; }
+    table { width: 100%; border-collapse: collapse; }
+    td { padding: 6px 4px; border-bottom: 1px solid #e5ebf0; }
+    label { display: block; font-size: 13px; margin-top: 8px; }
+    input, select { width: 100%; padding: 8px; margin: 6px 0; border: 1px solid #c9d5e0; border-radius: 6px; box-sizing: border-box; }
+    button { padding: 8px 12px; border: 0; border-radius: 6px; background: #1d6fa5; color: #fff; font-weight: 600; cursor: pointer; }
+    small { color: #4f5f6f; }
+  </style>
+</head>
+<body>
+  <div class="panel">
+    <h1>ts2 Logger Dashboard</h1>
+    <small>Telemetry-first view. Core 0 ignition path remains isolated.</small>
+    <br><br>
+    <a href="logger-metadata-preview.html" style="display:inline-block;padding:7px 10px;border-radius:6px;background:#1d6fa5;color:#fff;text-decoration:none;margin-right:8px;">Metadata</a>
+    <a href="logger-setup-preview.html" style="display:inline-block;padding:7px 10px;border-radius:6px;background:#1d6fa5;color:#fff;text-decoration:none;">Setup</a>
+  </div>
+
+  <div class="panel">
+    <h2>Live Telemetry</h2>
+    <table>
+      <tr><td>RPM</td><td>2150</td></tr>
+      <tr><td>Advance (deg BTDC)</td><td>16.0</td></tr>
+      <tr><td>Crank Angle (deg)</td><td>85.7</td></tr>
+      <tr><td>Temperature (C)</td><td>28.64</td></tr>
+      <tr><td>Pressure (hPa)</td><td>1009.22</td></tr>
+      <tr><td>Sensor</td><td>bmp280</td></tr>
+      <tr><td>Time (UTC)</td><td>2026-09-25T12:34:56Z</td></tr>
+    </table>
+  </div>
+
+  <div class="panel">
+    <h2>Quick Runtime State</h2>
+    <table>
+      <tr><td>Missing->TDC Offset (deg)</td><td>65.0</td></tr>
+      <tr><td>Min Advance (deg)</td><td>5.0</td></tr>
+      <tr><td>Max Advance (deg)</td><td>35.0</td></tr>
+      <tr><td>CDI Delay (us)</td><td>250</td></tr>
+      <tr><td>Dwell (us)</td><td>2500</td></tr>
+      <tr><td>Strobe Enabled</td><td>1</td></tr>
+      <tr><td>Strobe Mask</td><td>1</td></tr>
+      <tr><td>Strobe Pulse (ms)</td><td>5</td></tr>
+      <tr><td>Config Version</td><td>9</td></tr>
+    </table>
+  </div>
+</body>
+</html>

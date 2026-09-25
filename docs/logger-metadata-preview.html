@@ -1,0 +1,58 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ts2 Logger Metadata Preview</title>
+  <style>
+    body { font-family: Segoe UI, Arial, sans-serif; background: #f2f5f8; color: #1f2d3a; margin: 0; padding: 16px; }
+    .panel { background: #fff; border-radius: 10px; padding: 14px; margin-bottom: 12px; box-shadow: 0 2px 8px rgba(0,0,0,.08); }
+    h1 { margin: 0 0 10px; font-size: 20px; }
+    h2 { margin: 0 0 8px; font-size: 16px; }
+    table { width: 100%; border-collapse: collapse; }
+    td { padding: 6px 4px; border-bottom: 1px solid #e5ebf0; }
+    label { display: block; font-size: 13px; margin-top: 8px; }
+    input { width: 100%; padding: 8px; margin: 6px 0; border: 1px solid #c9d5e0; border-radius: 6px; box-sizing: border-box; }
+    button, a { display: inline-block; padding: 8px 12px; border: 0; border-radius: 6px; background: #1d6fa5; color: #fff; text-decoration: none; font-weight: 600; }
+    small { color: #4f5f6f; }
+  </style>
+</head>
+<body>
+  <div class="panel">
+    <h1>Metadata</h1>
+    <a href="logger-dashboard-preview.html">Back to Telemetry</a>
+  </div>
+
+  <div class="panel">
+    <h2>Network</h2>
+    <table>
+      <tr><td>Mode</td><td>station</td></tr>
+      <tr><td>IP</td><td>192.168.1.140</td></tr>
+    </table>
+  </div>
+
+  <div class="panel">
+    <h2>Logger Time Metadata</h2>
+    <table>
+      <tr><td>UTC Date/Time</td><td>2026-09-25T12:34:56Z</td></tr>
+      <tr><td>Epoch</td><td>1790339696</td></tr>
+      <tr><td>Time Source</td><td>ntp</td></tr>
+    </table>
+    <form>
+      <label>Manual Epoch (seconds UTC)</label>
+      <input type="number" min="1700000000" max="2208988800" placeholder="e.g. 1767225600">
+      <button type="button">Set Manual Time</button>
+    </form>
+    <small>Use this if NTP is unavailable. Time is used for log metadata.</small>
+  </div>
+
+  <div class="panel">
+    <h2>Environment Sensor (BMP280)</h2>
+    <table>
+      <tr><td>Sensor</td><td>bmp280</td></tr>
+      <tr><td>Temperature (C)</td><td>28.64</td></tr>
+      <tr><td>Pressure (hPa)</td><td>1009.22</td></tr>
+    </table>
+  </div>
+</body>
+</html>

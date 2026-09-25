@@ -32,12 +32,14 @@ This split intentionally avoids sending serial data or doing heavy processing in
 - credentials are persisted to NVS and applied after automatic reboot
 - dashboard shows live telemetry and key system configuration values
 - dashboard includes editable panels for key ignition/runtime parameters
+- editable panel labels, min/max ranges, and validation all come from one shared parameter catalog
 - logger clock metadata panel includes UTC datetime, epoch, and time source
 - logger attempts NTP time sync when station WiFi is connected
 - manual epoch entry is available from the web page when NTP is not available
 - optional BMP280 ambient sensor support on logger side (temperature + pressure)
 - web/API includes BMP280 readings for log metadata tagging
 - JSON endpoint at `/api/status` for machine-readable status polling
+- JSON endpoint at `/api/param_dictionary` exposes editable field IDs, labels, units, and ranges
 
 ### Trigger and RPM handling
 
@@ -106,8 +108,12 @@ This wheel is intentionally set up to keep the visual timing convention clear:
 - src/realtime_core.cpp - Core 0 real-time ignition ISR, strobe timing, and spark scheduling task
 - src/logger_core.h - logger module interface
 - src/logger_core.cpp - Core 1 logger, web UI, WiFi setup portal, editable config panel, and telemetry publishing
+- src/log_format.h - packed binary logging frame and dictionary schema definitions
+- src/param_catalog.h - shared editable parameter catalog interface (IDs, labels, units, ranges)
+- src/param_catalog.cpp - catalog entries used by web UI generation and range checking
 - tests/test_timing_harness.py - host-side timing and protocol validation
 - docs/timing-wheel.svg - timing wheel reference diagram
+- docs/log-format.md - logger record model, IDs, and representation guidance
 
 ## Build and run
 
