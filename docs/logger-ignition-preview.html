@@ -1,0 +1,54 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ts2 Logger Ignition Map Preview</title>
+  <style>
+    body { font-family: Segoe UI, Arial, sans-serif; background: #f2f5f8; color: #1f2d3a; margin: 0; padding: 16px; }
+    .panel { background: #fff; border-radius: 10px; padding: 14px; margin-bottom: 12px; box-shadow: 0 2px 8px rgba(0,0,0,.08); }
+    h1 { margin: 0 0 10px; font-size: 20px; }
+    h2 { margin: 0 0 8px; font-size: 16px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 6px 4px; border-bottom: 1px solid #e5ebf0; text-align: left; }
+    input { width: 100%; padding: 8px; margin: 2px 0; border: 1px solid #c9d5e0; border-radius: 6px; box-sizing: border-box; }
+    button, a { display: inline-block; padding: 8px 12px; border: 0; border-radius: 6px; background: #1d6fa5; color: #fff; text-decoration: none; font-weight: 600; }
+    small { color: #4f5f6f; }
+  </style>
+</head>
+<body>
+  <div class="panel">
+    <h1>Ignition Map</h1>
+    <a href="logger-dashboard-preview.html">Telemetry</a>
+    <a href="logger-metadata-preview.html">Metadata</a>
+    <a href="logger-setup-preview.html">Setup</a>
+  </div>
+
+  <div class="panel">
+    <h2>Advance Table (deg10)</h2>
+    <table>
+      <tr><th>Cell</th><th>RPM</th><th>Advance (deg10)</th><th>Display (deg)</th></tr>
+      <tr><td>0</td><td>0</td><td><input type="number" min="0" max="600" value="50"></td><td>5.0</td></tr>
+      <tr><td>1</td><td>666</td><td><input type="number" min="0" max="600" value="60"></td><td>6.0</td></tr>
+      <tr><td>2</td><td>1333</td><td><input type="number" min="0" max="600" value="80"></td><td>8.0</td></tr>
+      <tr><td>3</td><td>2000</td><td><input type="number" min="0" max="600" value="100"></td><td>10.0</td></tr>
+      <tr><td>4</td><td>2666</td><td><input type="number" min="0" max="600" value="130"></td><td>13.0</td></tr>
+      <tr><td>5</td><td>3333</td><td><input type="number" min="0" max="600" value="160"></td><td>16.0</td></tr>
+      <tr><td>6</td><td>4000</td><td><input type="number" min="0" max="600" value="190"></td><td>19.0</td></tr>
+      <tr><td>7</td><td>4666</td><td><input type="number" min="0" max="600" value="220"></td><td>22.0</td></tr>
+      <tr><td>8</td><td>5333</td><td><input type="number" min="0" max="600" value="250"></td><td>25.0</td></tr>
+      <tr><td>9</td><td>6000</td><td><input type="number" min="0" max="600" value="280"></td><td>28.0</td></tr>
+      <tr><td>10</td><td>6666</td><td><input type="number" min="0" max="600" value="300"></td><td>30.0</td></tr>
+      <tr><td>11</td><td>7333</td><td><input type="number" min="0" max="600" value="320"></td><td>32.0</td></tr>
+      <tr><td>12</td><td>8000</td><td><input type="number" min="0" max="600" value="335"></td><td>33.5</td></tr>
+      <tr><td>13</td><td>8666</td><td><input type="number" min="0" max="600" value="345"></td><td>34.5</td></tr>
+      <tr><td>14</td><td>9333</td><td><input type="number" min="0" max="600" value="350"></td><td>35.0</td></tr>
+      <tr><td>15</td><td>10000</td><td><input type="number" min="0" max="600" value="350"></td><td>35.0</td></tr>
+    </table>
+    <br>
+    <button type="button">Apply Ignition Map</button>
+    <br><br>
+    <small>Map values are constrained to 0..600 deg10 and must also stay inside active Min/Max Advance limits.</small>
+  </div>
+</body>
+</html>

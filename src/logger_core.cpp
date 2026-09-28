@@ -18,6 +18,19 @@ constexpr uint16_t TIME_SYNC_WAIT_MS = 5000;
 constexpr uint32_t VALID_UNIX_EPOCH_MIN = 1700000000UL;
 constexpr uint32_t ENV_SAMPLE_INTERVAL_MS = 1000;
 constexpr float PA_TO_HPA = 0.01f;
+constexpr char PREF_NS_WIFI[] = "wifi";
+constexpr char PREF_NS_RUNTIME[] = "runtime";
+constexpr char PREF_KEY_CFG_PRESENT[] = "cfg_present";
+constexpr char PREF_KEY_CFG_VERSION[] = "cfg_ver";
+constexpr char PREF_KEY_CFG_MISSING[] = "cfg_missing";
+constexpr char PREF_KEY_CFG_MIN_ADV[] = "cfg_min_adv";
+constexpr char PREF_KEY_CFG_MAX_ADV[] = "cfg_max_adv";
+constexpr char PREF_KEY_CFG_CDI_DELAY[] = "cfg_cdi";
+constexpr char PREF_KEY_CFG_DWELL[] = "cfg_dwell";
+constexpr char PREF_KEY_CFG_STROBE_MASK[] = "cfg_smask";
+constexpr char PREF_KEY_CFG_STROBE_EN[] = "cfg_sen";
+constexpr char PREF_KEY_CFG_STROBE_PULSE[] = "cfg_spulse";
+constexpr char PREF_KEY_ADV_MAP[] = "adv_map";
 
 Preferences g_preferences;
 WebServer g_webServer(80);
@@ -190,16 +203,160 @@ void loadTelemetrySnapshot(TelemetrySnapshot &snapshot) {
 }
 
 void loadStoredWifiCredentials(String &ssid, String &password) {
-  g_preferences.begin("wifi", true);
+  g_preferences.begin(PREF_NS_WIFI, true);
   ssid = g_preferences.getString("ssid", "");
   password = g_preferences.getString("pass", "");
   g_preferences.end();
 }
 
 void saveWifiCredentials(const String &ssid, const String &password) {
-  g_preferences.begin("wifi", false);
+  g_preferences.begin(PREF_NS_WIFI, false);
   g_preferences.putString("ssid", ssid);
   g_preferences.putString("pass", password);
+  g_preferences.end();
+}
+
+int32_t clampI32(int32_t value, int32_t minValue, int32_t maxValue) {
+  if (value < minValue) {
+    return minValue;
+  }
+  if (value > maxValue) {
+    return maxValue;
+  }
+  return value;
+}
+
+void normalizeRuntimeConfig(LoggerConfig &config) {
+  config.missingToothOffsetDeg10 = static_cast<int16_t>(clampI32(config.missingToothOffsetDeg10, -1800, 1800));
+  config.minAdvanceDeg10 = static_cast<uint16_t>(clampI32(config.minAdvanceDeg10, 0, 600));
+  config.maxAdvanceDeg10 = static_cast<uint16_t>(clampI32(config.maxAdvanceDeg10, 0, 600));
+  config.cdiDelayUs = static_cast<uint16_t>(clampI32(config.cdiDelayUs, 0, 5000));
+  config.dwellUs = static_cast<uint16_t>(clampI32(config.dwellUs, 100, 20000));
+  config.strobeEnabled = static_cast<uint8_t>(clampI32(config.strobeEnabled, 0, 1));
+  config.strobeMarkerMask = static_cast<uint8_t>(clampI32(config.strobeMarkerMask, 0, 7));
+  config.strobePulseUs = static_cast<uint16_t>(clampI32(config.strobePulseUs, 1, 50));
+
+  if (config.minAdvanceDeg10 > config.maxAdvanceDeg10) {
+    const uint16_t temp = config.minAdvanceDeg10;
+    config.minAdvanceDeg10 = config.maxAdvanceDeg10;
+    config.maxAdvanceDeg10 = temp;
+  }
+}
+
+void applyConfigToGlobals(const LoggerConfig &config) {
+  g_missingToothOffsetDeg10 = config.missingToothOffsetDeg10;
+  g_minAdvanceDeg10 = config.minAdvanceDeg10;
+  g_maxAdvanceDeg10 = config.maxAdvanceDeg10;
+  g_cdiDelayUs = config.cdiDelayUs;
+  g_dwellUs = config.dwellUs;
+  g_strobeMarkerMask = config.strobeMarkerMask;
+  g_strobeEnabled = config.strobeEnabled;
+  g_strobePulseUs = config.strobePulseUs;
+  g_configVersion = config.version;
+}
+
+bool clampAdvanceMapToLimits(uint16_t minLimit, uint16_t maxLimit) {
+  if (minLimit > maxLimit) {
+    const uint16_t temp = minLimit;
+    minLimit = maxLimit;
+    maxLimit = temp;
+  }
+
+  bool changed = false;
+  for (uint8_t i = 0; i < ADVANCE_TABLE_SIZE; ++i) {
+    uint16_t clamped = g_advanceTable[i];
+    if (clamped < ADVANCE_MAP_VALUE_MIN_DEG10) {
+      clamped = ADVANCE_MAP_VALUE_MIN_DEG10;
+    }
+    if (clamped > ADVANCE_MAP_VALUE_MAX_DEG10) {
+      clamped = ADVANCE_MAP_VALUE_MAX_DEG10;
+    }
+    if (clamped < minLimit) {
+      clamped = minLimit;
+    }
+    if (clamped > maxLimit) {
+      clamped = maxLimit;
+    }
+
+    if (clamped != g_advanceTable[i]) {
+      g_advanceTable[i] = clamped;
+      changed = true;
+    }
+  }
+
+  return changed;
+}
+
+bool loadStoredRuntimeConfig(LoggerConfig &config) {
+  g_preferences.begin(PREF_NS_RUNTIME, true);
+  const bool hasConfig = g_preferences.getUChar(PREF_KEY_CFG_PRESENT, 0) == 1;
+  if (!hasConfig) {
+    g_preferences.end();
+    return false;
+  }
+
+  config.version = g_preferences.getUShort(PREF_KEY_CFG_VERSION, config.version);
+  config.missingToothOffsetDeg10 = g_preferences.getShort(PREF_KEY_CFG_MISSING, config.missingToothOffsetDeg10);
+  config.minAdvanceDeg10 = g_preferences.getUShort(PREF_KEY_CFG_MIN_ADV, config.minAdvanceDeg10);
+  config.maxAdvanceDeg10 = g_preferences.getUShort(PREF_KEY_CFG_MAX_ADV, config.maxAdvanceDeg10);
+  config.cdiDelayUs = g_preferences.getUShort(PREF_KEY_CFG_CDI_DELAY, config.cdiDelayUs);
+  config.dwellUs = g_preferences.getUShort(PREF_KEY_CFG_DWELL, config.dwellUs);
+  config.strobeMarkerMask = g_preferences.getUChar(PREF_KEY_CFG_STROBE_MASK, config.strobeMarkerMask);
+  config.strobeEnabled = g_preferences.getUChar(PREF_KEY_CFG_STROBE_EN, config.strobeEnabled);
+  config.strobePulseUs = g_preferences.getUShort(PREF_KEY_CFG_STROBE_PULSE, config.strobePulseUs);
+  g_preferences.end();
+
+  normalizeRuntimeConfig(config);
+  return true;
+}
+
+void saveRuntimeConfig(const LoggerConfig &config) {
+  g_preferences.begin(PREF_NS_RUNTIME, false);
+  g_preferences.putUChar(PREF_KEY_CFG_PRESENT, 1);
+  g_preferences.putUShort(PREF_KEY_CFG_VERSION, config.version);
+  g_preferences.putShort(PREF_KEY_CFG_MISSING, config.missingToothOffsetDeg10);
+  g_preferences.putUShort(PREF_KEY_CFG_MIN_ADV, config.minAdvanceDeg10);
+  g_preferences.putUShort(PREF_KEY_CFG_MAX_ADV, config.maxAdvanceDeg10);
+  g_preferences.putUShort(PREF_KEY_CFG_CDI_DELAY, config.cdiDelayUs);
+  g_preferences.putUShort(PREF_KEY_CFG_DWELL, config.dwellUs);
+  g_preferences.putUChar(PREF_KEY_CFG_STROBE_MASK, config.strobeMarkerMask);
+  g_preferences.putUChar(PREF_KEY_CFG_STROBE_EN, config.strobeEnabled);
+  g_preferences.putUShort(PREF_KEY_CFG_STROBE_PULSE, config.strobePulseUs);
+  g_preferences.end();
+}
+
+bool loadAdvanceMapFromStorage() {
+  uint16_t mapValues[ADVANCE_TABLE_SIZE];
+
+  g_preferences.begin(PREF_NS_RUNTIME, true);
+  const size_t bytes = g_preferences.getBytes(PREF_KEY_ADV_MAP, mapValues, sizeof(mapValues));
+  g_preferences.end();
+  if (bytes != sizeof(mapValues)) {
+    return false;
+  }
+
+  for (uint8_t i = 0; i < ADVANCE_TABLE_SIZE; ++i) {
+    uint16_t value = mapValues[i];
+    if (value < ADVANCE_MAP_VALUE_MIN_DEG10) {
+      value = ADVANCE_MAP_VALUE_MIN_DEG10;
+    }
+    if (value > ADVANCE_MAP_VALUE_MAX_DEG10) {
+      value = ADVANCE_MAP_VALUE_MAX_DEG10;
+    }
+    g_advanceTable[i] = value;
+  }
+
+  return true;
+}
+
+void saveAdvanceMapToStorage() {
+  uint16_t mapValues[ADVANCE_TABLE_SIZE];
+  for (uint8_t i = 0; i < ADVANCE_TABLE_SIZE; ++i) {
+    mapValues[i] = g_advanceTable[i];
+  }
+
+  g_preferences.begin(PREF_NS_RUNTIME, false);
+  g_preferences.putBytes(PREF_KEY_ADV_MAP, mapValues, sizeof(mapValues));
   g_preferences.end();
 }
 
@@ -278,6 +435,20 @@ int32_t argToInt(const String &value, int32_t fallback) {
   }
 
   return static_cast<int32_t>(parsed);
+}
+
+void readAdvanceLimits(uint16_t &minLimit, uint16_t &maxLimit) {
+  minLimit = g_minAdvanceDeg10;
+  maxLimit = g_maxAdvanceDeg10;
+  if (minLimit > maxLimit) {
+    const uint16_t temp = minLimit;
+    minLimit = maxLimit;
+    maxLimit = temp;
+  }
+}
+
+String buildTopNavLinks() {
+  return String("<a href='/'>Telemetry</a><a href='/meta'>Metadata</a><a href='/setup'>Setup</a><a href='/ignition'>Ignition Map</a>");
 }
 
 int32_t getEditableCurrentValue(uint16_t paramId) {
@@ -375,7 +546,7 @@ void handleRootPage() {
 
   page += "<div class='panel'><h1>ts2 Logger Dashboard</h1>";
   page += "<small>Telemetry-first view. Core 0 ignition path remains isolated.</small><br><br>";
-  page += "<a href='/meta'>Metadata</a><a href='/setup'>Setup</a></div>";
+  page += buildTopNavLinks() + "</div>";
 
   page += "<div class='panel'><h2>Live Telemetry</h2><table>";
   page += "<tr><td>RPM</td><td id='rpm'>" + String((snapshot.rpm10 + 5U) / 10U) + "</td></tr>";
@@ -436,7 +607,7 @@ void handleMetadataPage() {
     "small{color:#4f5f6f;}"
     "</style></head><body>";
 
-  page += "<div class='panel'><h1>Metadata</h1><a href='/'>Back to Telemetry</a></div>";
+  page += "<div class='panel'><h1>Metadata</h1>" + buildTopNavLinks() + "</div>";
   page += "<div class='panel'><h2>Network</h2><table>";
   page += "<tr><td>Mode</td><td>" + String(g_setupPortalActive ? "setup-ap" : (g_wifiConnected ? "station" : "offline")) + "</td></tr>";
   page += "<tr><td>IP</td><td>" + wifiIpString() + "</td></tr>";
@@ -478,7 +649,7 @@ void handleSetupPage() {
     "small{color:#4f5f6f;}"
     "</style></head><body>";
 
-  page += "<div class='panel'><h1>Setup</h1><a href='/'>Back to Telemetry</a></div>";
+  page += "<div class='panel'><h1>Setup</h1>" + buildTopNavLinks() + "</div>";
 
   page += "<div class='panel'><h2>Edit Key Parameters</h2>";
   page += "<form method='POST' action='/config'>";
@@ -505,6 +676,42 @@ void handleSetupPage() {
   page += "<label>Password</label><input name='password' type='password' maxlength='63'>";
   page += "<button type='submit'>Save & Reboot</button></form>";
   page += "<small>Credentials are stored in NVS and applied on next boot.</small></div></body></html>";
+
+  g_webServer.send(200, "text/html", page);
+}
+
+void handleIgnitionMapPage() {
+  uint16_t minLimit = 0;
+  uint16_t maxLimit = 0;
+  readAdvanceLimits(minLimit, maxLimit);
+
+  String page =
+    "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+    "<title>ts2 Logger Ignition Map</title>"
+    "<style>body{font-family:Segoe UI,Arial,sans-serif;background:#f2f5f8;color:#1f2d3a;margin:0;padding:16px;}"
+    ".panel{background:#fff;border-radius:10px;padding:14px;margin-bottom:12px;box-shadow:0 2px 8px rgba(0,0,0,.08);}"
+    "h1{margin:0 0 10px;font-size:20px;}h2{margin:0 0 8px;font-size:16px;}"
+    "table{width:100%;border-collapse:collapse;}th,td{padding:6px 4px;border-bottom:1px solid #e5ebf0;text-align:left;}"
+    "label{display:block;font-size:13px;margin-top:8px;}"
+    "input{width:100%;padding:8px;margin:6px 0;border:1px solid #c9d5e0;border-radius:6px;box-sizing:border-box;}"
+    "button,a{display:inline-block;padding:8px 12px;border:0;border-radius:6px;background:#1d6fa5;color:#fff;text-decoration:none;font-weight:600;cursor:pointer;margin-right:8px;}"
+    "small{color:#4f5f6f;}"
+    "</style></head><body>";
+
+  page += "<div class='panel'><h1>Ignition Map</h1>" + buildTopNavLinks() + "</div>";
+  page += "<div class='panel'><h2>Advance Table (deg10)</h2>";
+  page += "<form method='POST' action='/ignition_map'>";
+  page += "<table><tr><th>Cell</th><th>RPM</th><th>Advance (deg10)</th><th>Display (deg)</th></tr>";
+  for (uint8_t i = 0; i < ADVANCE_TABLE_SIZE; ++i) {
+    const uint16_t rpmPoint = static_cast<uint16_t>((static_cast<uint32_t>(i) * MAX_RPM) / (ADVANCE_TABLE_SIZE - 1U));
+    const uint16_t value = g_advanceTable[i];
+    page += "<tr><td>" + String(i) + "</td><td>" + String(rpmPoint) + "</td><td>";
+    page += "<input name='map_" + String(i) + "' type='number' min='" + String(ADVANCE_MAP_VALUE_MIN_DEG10) + "' max='" + String(ADVANCE_MAP_VALUE_MAX_DEG10) + "' value='" + String(value) + "' required>";
+    page += "</td><td>" + formatDeg10(value) + "</td></tr>";
+  }
+  page += "</table><button type='submit'>Apply Ignition Map</button></form>";
+  page += "<small>Limits: each map cell must be " + String(minLimit) + ".." + String(maxLimit) + " deg10 (" + formatDeg10(minLimit) + ".." + formatDeg10(maxLimit) + " deg), and always within " + String(ADVANCE_MAP_VALUE_MIN_DEG10) + ".." + String(ADVANCE_MAP_VALUE_MAX_DEG10) + " deg10.</small>";
+  page += "</div></body></html>";
 
   g_webServer.send(200, "text/html", page);
 }
@@ -592,8 +799,48 @@ void handleConfigSave() {
     return;
   }
 
+  normalizeRuntimeConfig(config);
+  applyConfigToGlobals(config);
+  const bool mapChanged = clampAdvanceMapToLimits(config.minAdvanceDeg10, config.maxAdvanceDeg10);
+
   xQueueOverwrite(configQueue, &config);
+  saveRuntimeConfig(config);
+  if (mapChanged) {
+    saveAdvanceMapToStorage();
+  }
   g_webServer.sendHeader("Location", "/");
+  g_webServer.send(303, "text/plain", "");
+}
+
+void handleIgnitionMapSave() {
+  uint16_t minLimit = 0;
+  uint16_t maxLimit = 0;
+  readAdvanceLimits(minLimit, maxLimit);
+
+  uint16_t updatedMap[ADVANCE_TABLE_SIZE];
+  for (uint8_t i = 0; i < ADVANCE_TABLE_SIZE; ++i) {
+    const String fieldName = "map_" + String(i);
+    const int32_t currentValue = g_advanceTable[i];
+    const int32_t parsedValue = argToInt(g_webServer.arg(fieldName), currentValue);
+    if (parsedValue < ADVANCE_MAP_VALUE_MIN_DEG10 || parsedValue > ADVANCE_MAP_VALUE_MAX_DEG10) {
+      g_webServer.send(400, "text/plain", "Map value out of allowed range");
+      return;
+    }
+
+    if (parsedValue < static_cast<int32_t>(minLimit) || parsedValue > static_cast<int32_t>(maxLimit)) {
+      g_webServer.send(400, "text/plain", "Map value outside configured advance limits");
+      return;
+    }
+
+    updatedMap[i] = static_cast<uint16_t>(parsedValue);
+  }
+
+  for (uint8_t i = 0; i < ADVANCE_TABLE_SIZE; ++i) {
+    g_advanceTable[i] = updatedMap[i];
+  }
+  saveAdvanceMapToStorage();
+
+  g_webServer.sendHeader("Location", "/ignition");
   g_webServer.send(303, "text/plain", "");
 }
 
@@ -614,11 +861,13 @@ void startLoggerWebInterface() {
   g_webServer.on("/", HTTP_GET, handleRootPage);
   g_webServer.on("/meta", HTTP_GET, handleMetadataPage);
   g_webServer.on("/setup", HTTP_GET, handleSetupPage);
+  g_webServer.on("/ignition", HTTP_GET, handleIgnitionMapPage);
   g_webServer.on("/api/status", HTTP_GET, handleStatusApi);
   g_webServer.on("/api/param_dictionary", HTTP_GET, handleParamDictionaryApi);
   g_webServer.on("/wifi", HTTP_POST, handleWifiSave);
   g_webServer.on("/time", HTTP_POST, handleTimeSave);
   g_webServer.on("/config", HTTP_POST, handleConfigSave);
+  g_webServer.on("/ignition_map", HTTP_POST, handleIgnitionMapSave);
   g_webServer.onNotFound([]() {
     g_webServer.sendHeader("Location", "/");
     g_webServer.send(302, "text/plain", "");
@@ -633,6 +882,20 @@ void loggerTask(void *param) {
   const TickType_t telemetryPeriod = pdMS_TO_TICKS(200);
   TickType_t nextTelemetry = xTaskGetTickCount();
   uint8_t telemetrySeq = 0;
+
+  LoggerConfig bootConfig{};
+  if (loadStoredRuntimeConfig(bootConfig)) {
+    applyConfigToGlobals(bootConfig);
+    xQueueOverwrite(configQueue, &bootConfig);
+  }
+
+  if (loadAdvanceMapFromStorage()) {
+    const bool mapChanged = clampAdvanceMapToLimits(g_minAdvanceDeg10, g_maxAdvanceDeg10);
+    if (mapChanged) {
+      saveAdvanceMapToStorage();
+    }
+  }
+
   initEnvSensor();
   startLoggerWebInterface();
 
@@ -647,7 +910,14 @@ void loggerTask(void *param) {
 
     LoggerConfig incomingConfig{};
     if (consumeConfigPacket(incomingConfig)) {
+      normalizeRuntimeConfig(incomingConfig);
+      applyConfigToGlobals(incomingConfig);
+      const bool mapChanged = clampAdvanceMapToLimits(incomingConfig.minAdvanceDeg10, incomingConfig.maxAdvanceDeg10);
       xQueueOverwrite(configQueue, &incomingConfig);
+      saveRuntimeConfig(incomingConfig);
+      if (mapChanged) {
+        saveAdvanceMapToStorage();
+      }
       Serial.write("ACK\n");
     }
 

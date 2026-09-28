@@ -12,6 +12,8 @@ constexpr uint16_t MAX_RPM = 10000;
 constexpr uint16_t CRANKING_RPM_THRESHOLD = 800;
 constexpr uint16_t MIN_ADVANCE_TENTHS_DEG = 50;
 constexpr uint8_t ADVANCE_TABLE_SIZE = 16;
+constexpr uint16_t ADVANCE_MAP_VALUE_MIN_DEG10 = 0;
+constexpr uint16_t ADVANCE_MAP_VALUE_MAX_DEG10 = 600;
 constexpr uint32_t MAX_VALID_TOOTH_PERIOD_US = 250000;
 constexpr uint32_t MISSING_TOOTH_GAP_FACTOR = 15;
 constexpr uint32_t CDI_FIRE_DELAY_US = 250;
@@ -113,6 +115,7 @@ extern volatile uint8_t g_strobeMarkerMask;
 extern volatile uint8_t g_strobeEnabled;
 extern volatile uint16_t g_strobePulseUs;
 extern volatile uint32_t g_configVersion;
+extern volatile uint16_t g_advanceTable[ADVANCE_TABLE_SIZE];
 extern esp_timer_handle_t g_strobeOffTimer;
 
 extern QueueHandle_t ignitionQueue;

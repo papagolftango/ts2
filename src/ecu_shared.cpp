@@ -1,10 +1,5 @@
 #include "ecu_shared.h"
 
-static const uint16_t kAdvanceTable[ADVANCE_TABLE_SIZE] = {
-  50, 60, 80, 100, 130, 160, 190, 220,
-  250, 280, 300, 320, 335, 345, 350, 350
-};
-
 volatile uint32_t g_lastEdgeUs = 0;
 volatile uint32_t g_periodUs = 0;
 volatile uint32_t g_edgeCount = 0;
@@ -21,6 +16,10 @@ volatile uint8_t g_strobeMarkerMask = STROBE_TDC;
 volatile uint8_t g_strobeEnabled = 1;
 volatile uint16_t g_strobePulseUs = static_cast<uint16_t>(DEBUG_STROBE_PULSE_US / 1000U);
 volatile uint32_t g_configVersion = 0;
+volatile uint16_t g_advanceTable[ADVANCE_TABLE_SIZE] = {
+  50, 60, 80, 100, 130, 160, 190, 220,
+  250, 280, 300, 320, 335, 345, 350, 350
+};
 esp_timer_handle_t g_strobeOffTimer = nullptr;
 
 QueueHandle_t ignitionQueue = nullptr;
@@ -36,25 +35,39 @@ uint32_t estimateRpmTenths(uint32_t periodUs) {
 }
 
 uint16_t lookupAdvanceTenthsDeg(uint16_t rpm) {
+  uint16_t minLimit = g_minAdvanceDeg10;
+  uint16_t maxLimit = g_maxAdvanceDeg10;
+  if (minLimit > maxLimit) {
+    const uint16_t temp = minLimit;
+    minLimit = maxLimit;
+    maxLimit = temp;
+  }
+
   if (rpm < CRANKING_RPM_THRESHOLD) {
-    return g_minAdvanceDeg10;
+    return minLimit;
   }
 
   if (rpm >= MAX_RPM) {
-    return g_maxAdvanceDeg10;
+    return maxLimit;
   }
 
   const uint32_t tableIndex = (static_cast<uint32_t>(rpm) * (ADVANCE_TABLE_SIZE - 1U)) / MAX_RPM;
   const uint16_t index = static_cast<uint16_t>(tableIndex);
   const uint16_t nextIndex = (index + 1U < ADVANCE_TABLE_SIZE) ? (index + 1U) : (ADVANCE_TABLE_SIZE - 1U);
 
-  const uint16_t lowAdvance = kAdvanceTable[index];
-  const uint16_t highAdvance = kAdvanceTable[nextIndex];
+  const uint16_t lowAdvance = g_advanceTable[index];
+  const uint16_t highAdvance = g_advanceTable[nextIndex];
 
   const uint32_t rpmLow = (static_cast<uint32_t>(index) * MAX_RPM) / (ADVANCE_TABLE_SIZE - 1U);
   const uint32_t rpmHigh = (static_cast<uint32_t>(nextIndex) * MAX_RPM) / (ADVANCE_TABLE_SIZE - 1U);
 
   if (rpmHigh == rpmLow) {
+    if (lowAdvance < minLimit) {
+      return minLimit;
+    }
+    if (lowAdvance > maxLimit) {
+      return maxLimit;
+    }
     return lowAdvance;
   }
 
@@ -62,7 +75,15 @@ uint16_t lookupAdvanceTenthsDeg(uint16_t rpm) {
   const uint32_t interpolated = static_cast<uint32_t>(lowAdvance) +
                                (((static_cast<uint32_t>(highAdvance - lowAdvance)) * fraction) >> 16U);
 
-  return static_cast<uint16_t>(interpolated);
+  uint16_t clamped = static_cast<uint16_t>(interpolated);
+  if (clamped < minLimit) {
+    clamped = minLimit;
+  }
+  if (clamped > maxLimit) {
+    clamped = maxLimit;
+  }
+
+  return clamped;
 }
 
 int32_t computeSparkTimeUs(uint32_t revPeriodUs, uint16_t advanceDeg10, int16_t refOffsetDeg10) {
