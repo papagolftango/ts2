@@ -124,6 +124,28 @@ pio run
 pio device monitor
 ```
 
+Dual-build setup:
+
+- ECU firmware (existing):
+
+```bash
+pio run -e esp32dev
+```
+
+- Trigger-wheel simulator firmware (second ESP32):
+
+```bash
+pio run -e trigger_sim
+pio device monitor -e trigger_sim
+```
+
+Trigger simulator notes:
+
+- outputs 36:1 wheel pulses on GPIO 26 (idle high, active low tooth pulses)
+- one missing-tooth slot per 36-slot cycle
+- rotary encoder inputs on GPIO 32/33 (input pull-up)
+- encoder adjusts effective RPM in 50 RPM steps, clamped to 300..10000 RPM
+
 Web usage notes:
 
 - if station credentials are valid, browse to the logger-side station IP shown on serial output
